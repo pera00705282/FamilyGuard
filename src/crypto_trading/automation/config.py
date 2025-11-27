@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Union
 from pydantic import BaseModel, Field, validator
 from enum import Enum
 
+
 class TaskPriority(str, Enum):
     """Priority levels for automated tasks."""
     LOW = "low"
@@ -13,12 +14,10 @@ class TaskPriority(str, Enum):
     CRITICAL = "critical"
 
 
-
 class ScheduleType(str, Enum):
     INTERVAL = "interval"  # Run at fixed intervals (in seconds)
     CRON = "cron"          # Cron-style scheduling
     TIME = "time"          # Specific time of day
-
 
 
 class TaskConfig(BaseModel):
