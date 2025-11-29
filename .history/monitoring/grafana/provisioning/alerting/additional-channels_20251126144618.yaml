@@ -1,0 +1,74 @@
+apiVersion: 1
+
+notifiers:
+  # OpsGenie Configuration
+  - name: opsgenie-alerts
+    type: opsgenie
+    uid: opsgenie-alerts
+    is_default: false
+    settings:
+      apiKey: ${OPSGENIE_API_KEY}
+      apiUrl: https://api.opsgenie.com/v2/alerts
+      message: '{{ template "opsgenie_message" . }}'
+      description: '{{ template "opsgenie_message" . }}'
+      autoClose: true
+      overridePriority: true
+      sendTagsAs: tags
+
+  # SMS via Twilio
+  - name: sms-alerts
+    type: sensugo
+    uid: sms-alerts
+    is_default: false
+    settings:
+      url: https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json
+      apikey: ${TWILIO_AUTH_TOKEN}
+      username: ${TWILIO_ACCOUNT_SID}
+      toNumbers: '+1234567890'  # Comma-separated list of phone numbers
+      fromNumber: '+1987654321'  # Your Twilio phone number
+      message: '{{ template "sms_message" . }}'
+      apiHost: 'api.twilio.com'
+
+  # Webhook for custom integrations
+  - name: webhook-alerts
+    type: webhook
+    uid: webhook-alerts
+    is_default: false
+    settings:
+      url: '${WEBHOOK_URL}'
+      httpMethod: 'POST'
+      username: '${WEBHOOK_USER}'
+      password: '${WEBHOOK_PASSWORD}'
+      disableResolveMessage: false
+      authorizationScheme: 'Bearer'
+      authorizationCredentials: '${WEBHOOK_TOKEN}'
+      maxAlerts: 0
+      message: '{{ template "default.message" . }}'
+      title: '{{ template "default.title" . }}'
+
+  # Microsoft Teams
+  - name: teams-alerts
+    type: teams
+    uid: teams-alerts
+    is_default: false
+    settings:
+      url: '${TEAMS_WEBHOOK_URL}'
+      title: '{{ template "teams.title" . }}'
+      sectiontitle: '{{ template "teams.sectiontitle" . }}'
+      message: '{{ template "teams.message" . }}'
+
+  # PagerDuty
+  - name: pagerduty-alerts
+    type: pagerduty
+    uid: pagerduty-alerts
+    is_default: false
+    settings:
+      integrationKey: ${PAGERDUTY_INTEGRATION_KEY}
+      severity: '{{ if eq .Status "firing" }}critical{{ else }}warning{{ end }}'
+      component: 'Trading System'
+      group: 'trading'
+      class: '{{ .CommonLabels.alertname }}'
+      summary: '{{ template "pagerduty.summary" . }}'
+      source: '{{ template "pagerduty.source" . }}'
+      client: 'Grafana Alerting'
+      client_url: '{{ .ExternalURL }}'

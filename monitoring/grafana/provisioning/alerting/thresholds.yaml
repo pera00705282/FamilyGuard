@@ -1,0 +1,51 @@
+apiVersion: 1
+
+# Risk tolerance levels: conservative, moderate, aggressive
+thresholds:
+  # System metrics
+  cpu_usage:
+    warning: 80  # %
+    critical: 95 # %
+  
+  memory_usage:
+    warning: 75  # %
+    critical: 90 # %
+  
+  # Trading metrics
+  drawdown:
+    conservative: 2    # %
+    moderate: 5        # %
+    aggressive: 10     # %
+  
+  slippage:
+    warning: 0.2  # %
+    critical: 0.5 # %
+  
+  trade_latency:
+    warning: 0.5  # seconds
+    critical: 1.0 # seconds
+  
+  # Strategy specific
+  strategy_win_rate:
+    warning: 45   # %
+    critical: 30  # %
+  
+  # Position sizing
+  position_risk_per_trade:
+    conservative: 0.5  # % of portfolio
+    moderate: 1.0      # % of portfolio
+    aggressive: 2.0    # % of portfolio
+
+# Alert templates
+alert_templates:
+  system_high_usage: |
+    {{ if gt .Value .Threshold }}System {{ .Metric }} is at {{ .Value }}%, exceeding threshold of {{ .Threshold }}%
+    {{ if eq .Severity "warning" }}⚠️{{ else }}🚨{{ end }} [{{ .Severity | upper }}] {{ .AlertName }}
+    {{ .Labels | toYaml | indent 4 }}
+    {{ end }}
+
+  trading_alert: |
+    {{ if gt .Value .Threshold }}{{ .Metric | title }} for {{ .Labels.symbol }} is at {{ .Value }}{{ .Unit }}, exceeding threshold of {{ .Threshold }}{{ .Unit }}
+    {{ if eq .Severity "warning" }}⚠️{{ else }}🚨{{ end }} [{{ .Severity | upper }}] {{ .AlertName }}
+    {{ .Labels | toYaml | indent 4 }}
+    {{ end }}

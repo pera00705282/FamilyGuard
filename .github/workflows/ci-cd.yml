@@ -8,7 +8,8 @@ on:
 
 env:
   PYTHON_VERSION: '3.9'
-  DOCKER_IMAGE: ghcr.io/your-username/crypto-trading
+  DOCKER_IMAGE: ghcr.io/${{ github.repository_owner }}/crypto-trading
+  DOCKER_BUILDKIT: 1
 
 jobs:
   test:
@@ -54,11 +55,13 @@ jobs:
         pytest --cov=src --cov-report=xml --cov-report=term
     
     - name: Upload coverage to Codecov
+      if: success() && github.event_name == 'push'
       uses: codecov/codecov-action@v3
       with:
-        token: ${{ secrets.CODECOV_TOKEN }}
+        token: ${{ secrets.CODECOV_TOKEN || '' }}
         file: ./coverage.xml
-        fail_ci_if_error: true
+        flags: unittests
+        fail_ci_if_error: false
 
   build-and-push:
     name: Build and Push Docker Image
@@ -95,16 +98,13 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-    
-    - name: Logout of GitHub Container Registry
-      if: always()
-      run: docker logout ghcr.io
 
   deploy-staging:
     name: Deploy to Staging
     needs: build-and-push
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    environment: staging
     
     steps:
     - name: Checkout code
@@ -113,33 +113,76 @@ jobs:
     - name: Install SSH key
       uses: shimataro/ssh-key-action@v2
       with:
-        key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
-        known_hosts: "just-a-placeholder-so-we-don't-get-errors"
+        key: ${{ secrets.STAGING_SSH_PRIVATE_KEY || '' }}
+        known_hosts: 'just-a-placeholder-so-we-dont-get-errors'
     
     - name: Deploy to staging server
+      env:
+        SSH_PORT: ${{ secrets.STAGING_SSH_PORT || '22' }}
+        SSH_USER: ${{ secrets.STAGING_SSH_USER || 'ubuntu' }}
+        DEPLOY_PATH: '/var/www/crypto-trading'
       run: |
-        echo "Deploying to staging..."
-        ssh -o StrictHostKeyChecking=no \
-            -p ${{ secrets.STAGING_SSH_PORT }} \
-            ${{ secrets.STAGING_SSH_USER }}@${{ secrets.STAGING_HOST }} \
-            "cd /path/to/app && \
-             git pull && \
-             docker-compose -f docker-compose.yml -f docker-compose.prod.yml pull && \
-             docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d"
+        echo "Deploying to staging server..."
+        echo "Connecting to $SSH_USER@${{ secrets.STAGING_HOST }}:$SSH_PORT"
+        
+        # Create a temporary script to avoid complex escaping
+        cat > deploy.sh << 'EOL'
+        #!/bin/bash
+        set -e
+        
+        echo "Changing to project directory: $1"
+        cd "$1" || exit 1
+        
+        echo "Pulling latest changes..."
+        git fetch origin main
+        git reset --hard origin/main
+        
+        echo "Updating Docker containers..."
+        docker-compose -f docker-compose.yml -f docker-compose.prod.yml pull
+        docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+        
+        echo "Cleaning up..."
+        docker system prune -f
+        EOL
+        
+        # Copy and execute the deployment script
+        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" deploy.sh "$SSH_USER@${{ secrets.STAGING_HOST }}:/tmp/deploy.sh"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "$SSH_USER@${{ secrets.STAGING_HOST }}" \
+            "chmod +x /tmp/deploy.sh && /tmp/deploy.sh $DEPLOY_PATH"
+        
+        echo "Deployment completed successfully!"
 
   notify:
     name: Notify Status
     needs: [test, build-and-push, deploy-staging]
     if: always()
     runs-on: ubuntu-latest
+    environment: notifications
     
     steps:
+    - name: Get workflow status
+      id: status
+      run: |
+        if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+          echo "status=failure" >> $GITHUB_OUTPUT
+          echo "message=❌ Deployment failed! Check the logs for details."
+        else
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "message=✅ Deployment completed successfully!"
+        fi
+    
     - name: Send Slack notification
+      if: always()
       uses: rtCamp/action-slack-notify@v2
       env:
-        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
-        SLACK_COLOR: ${{ job.status == 'success' && 'good' || 'danger' }}
-        SLACK_TITLE: 'Deployment ${{ job.status }}'
-        SLACK_MESSAGE: 'Workflow ${{ github.workflow }} completed with status: ${{ job.status }}'
-        SLACK_USERNAME: GitHub Actions
-        MSG_MINIMAL: true
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL || '' }}
+        SLACK_COLOR: ${{ steps.status.outputs.status == 'success' && 'good' || 'danger' }}
+        SLACK_TITLE: "Deployment ${{ steps.status.outputs.status }} - ${{ github.ref_name }}"
+        SLACK_MESSAGE: |
+          ${{ steps.status.outputs.message }}
+          Repository: ${{ github.repository }}
+          Workflow: ${{ github.workflow }}
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+        SLACK_USERNAME: "GitHub Actions"
+        MSG_MINIMAL: "false"

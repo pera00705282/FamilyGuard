@@ -1,0 +1,233 @@
+# Create .github/workflows directory if it doesn't exist
+$workflowDir = ".github/workflows"
+if (-not (Test-Path $workflowDir)) {
+    New-Item -ItemType Directory -Path $workflowDir -Force
+}
+
+# Create the CI/CD workflow file
+@'
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PYTHON_VERSION: '3.9'
+  DOCKER_IMAGE: ghcr.io/${{ github.repository_owner }}/crypto-trading
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-dev.txt
+        pip install -e .
+    
+    - name: Run linters
+      run: |
+        flake8 src tests
+        black --check src tests
+        isort --check-only src tests
+        mypy src
+    
+    - name: Run tests with coverage
+      env:
+        REDIS_URL: redis://localhost:6379/0
+      run: |
+        pytest --cov=src --cov-report=xml --cov-report=term
+    
+    - name: Upload coverage to Codecov
+      if: success() && github.event_name == 'push'
+      uses: codecov/codecov-action@v3
+      with:
+        token: ${{ secrets.CODECOV_TOKEN || '' }}
+        file: ./coverage.xml
+        flags: unittests
+        fail_ci_if_error: false
+
+  build-and-push:
+    name: Build and Push Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata (tags, labels) for Docker
+      id: meta
+      uses: docker/metadata-action@v4
+      with:
+        images: ${{ env.DOCKER_IMAGE }}
+        tags: |
+          type=sha,format=long
+          type=ref,event=branch
+          type=ref,event=pr
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Install SSH key
+      uses: shimataro/ssh-key-action@v2
+      with:
+        key: ${{ secrets.STAGING_SSH_PRIVATE_KEY || '' }}
+        known_hosts: 'just-a-placeholder-so-we-dont-get-errors'
+    
+    - name: Deploy to staging server
+      env:
+        SSH_PORT: ${{ secrets.STAGING_SSH_PORT || '22' }}
+        SSH_USER: ${{ secrets.STAGING_SSH_USER || 'ubuntu' }}
+        DEPLOY_PATH: '/var/www/crypto-trading'
+      run: |
+        echo "Deploying to staging server..."
+        echo "Connecting to $SSH_USER@${{ secrets.STAGING_HOST }}:$SSH_PORT"
+        
+        # Create a temporary script to avoid complex escaping
+        cat > deploy.sh << 'EOL'
+        #!/bin/bash
+        set -e
+        
+        echo "Changing to project directory: $1"
+        cd "$1" || exit 1
+        
+        echo "Pulling latest changes..."
+        git fetch origin main
+        git reset --hard origin/main
+        
+        echo "Updating Docker containers..."
+        docker-compose -f docker-compose.yml -f docker-compose.prod.yml pull
+        docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+        
+        echo "Cleaning up..."
+        docker system prune -f
+        EOL
+        
+        # Copy and execute the deployment script
+        scp -o StrictHostKeyChecking=no -P "$SSH_PORT" deploy.sh "$SSH_USER@${{ secrets.STAGING_HOST }}:/tmp/deploy.sh"
+        ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" "$SSH_USER@${{ secrets.STAGING_HOST }}" \
+            "chmod +x /tmp/deploy.sh && /tmp/deploy.sh $DEPLOY_PATH"
+        
+        echo "Deployment completed successfully!"
+
+  notify:
+    name: Notify Status
+    needs: [test, build-and-push, deploy-staging]
+    if: always()
+    runs-on: ubuntu-latest
+    environment: notifications
+    
+    steps:
+    - name: Get workflow status
+      id: status
+      run: |
+        if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+          echo "status=failure" >> $GITHUB_OUTPUT
+          echo "message=❌ Deployment failed! Check the logs for details."
+        else
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "message=✅ Deployment completed successfully!"
+        fi
+    
+    - name: Send Slack notification
+      if: always()
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL || '' }}
+        SLACK_COLOR: ${{ steps.status.outputs.status == 'success' && 'good' || 'danger' }}
+        SLACK_TITLE: "Deployment ${{ steps.status.outputs.status }} - ${{ github.ref_name }}"
+        SLACK_MESSAGE: |
+          ${{ steps.status.outputs.message }}
+          Repository: ${{ github.repository }}
+          Workflow: ${{ github.workflow }}
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+        SLACK_USERNAME: "GitHub Actions"
+        MSG_MINIMAL: "false"
+'@ | Out-File -FilePath "$workflowDir/ci-cd.yml" -Encoding utf8
+
+# Create a README with setup instructions
+@'
+# CI/CD Pipeline Setup
+
+## Required GitHub Secrets
+
+1. Go to your repository Settings > Secrets and variables > Actions
+2. Click "New repository secret" and add:
+
+### Required Secrets:
+- STAGING_SSH_PRIVATE_KEY: Your SSH private key for the staging server
+- STAGING_HOST: Your server's IP or domain
+
+### Optional Secrets:
+- CODECOV_TOKEN: For code coverage reporting
+- STAGING_SSH_PORT: (default: 22)
+- STAGING_SSH_USER: (default: 'ubuntu')
+- SLACK_WEBHOOK_URL: For deployment notifications
+
+## Required GitHub Environments
+
+1. Go to your repository Settings > Environments
+2. Create these environments:
+   - staging
+   - 
+otifications
+
+## First Deployment
+
+1. Push to the main branch to trigger the workflow
+2. Monitor the workflow in the Actions tab
+'@ | Out-File -Path "CI_CD_SETUP.md" -Encoding utf8
+
+Write-Host "✅ CI/CD workflow file created at: .github/workflows/ci-cd.yml" -ForegroundColor Green
+Write-Host "📝 Please check CI_CD_SETUP.md for next steps to configure your repository." -ForegroundColor Cyan

@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      - redis
+    command: >
+      bash -c "pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=xml"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"

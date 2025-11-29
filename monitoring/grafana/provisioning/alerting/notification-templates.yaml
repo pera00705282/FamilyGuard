@@ -1,0 +1,42 @@
+apiVersion: 1
+templates:
+  - name: opsgenie_template
+    template: |
+      {{ define "opsgenie_message" }}
+      {{ if gt (len .Alerts.Firing) 0 }}
+      {{ range .Alerts.Firing }}
+      **Alert**: {{ .Annotations.summary }}
+      **Description**: {{ .Annotations.description }}
+      **Severity**: {{ .Labels.severity | title }}
+      **Status**: {{ .Status }}
+      **Starts At**: {{ .StartsAt }}
+      **Labels**:
+      {{ range .Labels.SortedPairs }}- {{ .Name }}: {{ .Value }}
+      {{ end }}
+      {{ end }}
+      {{ end }}
+      {{ if gt (len .Alerts.Resolved) 0 }}
+      {{ range .Alerts.Resolved }}
+      **Resolved**: {{ .Annotations.summary }}
+      **Resolved At**: {{ .EndsAt }}
+      **Labels**:
+      {{ range .Labels.SortedPairs }}- {{ .Name }}: {{ .Value }}
+      {{ end }}
+      {{ end }}
+      {{ end }}
+      {{ end }}
+
+  - name: sms_template
+    template: |
+      {{ define "sms_message" }}
+      {{ if gt (len .Alerts.Firing) 0 }}
+      {{ range .Alerts.Firing }}
+      [ALERT] {{ .Status | toUpper }}: {{ .Annotations.summary }}
+      {{ end }}
+      {{ end }}
+      {{ if gt (len .Alerts.Resolved) 0 }}
+      {{ range .Alerts.Resolved }}
+      [RESOLVED] {{ .Annotations.summary }}
+      {{ end }}
+      {{ end }}
+      {{ end }}

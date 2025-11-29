@@ -1,0 +1,37 @@
+apiVersion: 1
+
+notifiers:
+  - name: email-notifier
+    type: email
+    uid: email-notifier
+    # Note: These settings should be configured in Grafana UI or via environment variables
+    is_default: false
+    settings:
+      addresses: "{{ template "default.email" . }}"
+      singleEmail: true
+      message: "{{ template "default.message" . }}"
+      subject: "{{ template "default.title" . }}"
+
+  - name: slack-notifier
+    type: slack
+    uid: slack-notifier
+    # Note: Webhook URL should be configured in Grafana UI or via environment variables
+    is_default: true
+    settings:
+      url: "{{ .ExternalURL }}"
+      recipient: "#trading-alerts"
+      username: "Grafana Alert"
+      icon_emoji: ":chart_with_upwards_trend:"
+      text: "{{ template "default.message" . }}"
+      title: "{{ template "default.title" . }}"
+      
+  - name: pagerduty-notifier
+    type: pagerduty
+    uid: pagerduty-notifier
+    # Note: Integration Key should be configured in Grafana UI or via environment variables
+    settings:
+      integrationKey: "{{ .IntegrationKey }}"
+      severity: "{{ if eq .Status "firing" }}critical{{ else }}warning{{ end }}"
+      component: "Trading System"
+      group: "trading"
+      class: "{{ .CommonLabels.alertname }}"
